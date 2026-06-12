@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import pandas_ta as ta
 import urllib.request
 import xml.etree.ElementTree as ET
 import nltk
@@ -11,8 +10,11 @@ from sklearn.ensemble import RandomForestClassifier
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# Ensure NLP dictionary is ready
-nltk.download('vader_lexicon', quiet=True)
+# Safely handle NLTK download for the cloud environment
+try:
+    nltk.data.find('sentiment/vader_lexicon.zip')
+except LookupError:
+    nltk.download('vader_lexicon', quiet=True)
 
 # --- 1. SETUP PAGE DESIGN & LIVE HEARTBEAT ---
 st.set_page_config(page_title="AlgoStax Premium Engine", layout="wide", page_icon="🤖")
@@ -47,7 +49,42 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- 2. BACKEND LOGIC FUNCTIONS ---
+# --- 2. NATIVE MATHEMATICAL INDICATORS ENGINE ---
+def calculate_native_indicators(df):
+    """
+    Replaces pandas_ta entirely using vectorized pandas calculations.
+    Maintains exact column name pairings expected by the Machine Learning Engine.
+    """
+    df = df.copy()
+    
+    # 20 & 50 period Exponential Moving Averages (EMA)
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    
+    # 14-period Relative Strength Index (RSI)
+    delta = df['Close'].diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    rs = avg_gain / (avg_loss + 1e-10)  # Safe division buffer
+    df['RSI_14'] = 100 - (100 / (1 + rs))
+    
+    # Moving Average Convergence Divergence (MACD 12, 26)
+    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD_12_26_9'] = ema12 - ema26
+    
+    # 14-period Average True Range (ATR)
+    high_low = df['High'] - df['Low']
+    high_close_prev = (df['High'] - df['Close'].shift(1)).abs()
+    low_close_prev = (df['Low'] - df['Close'].shift(1)).abs()
+    true_range = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+    df['ATRr_14'] = true_range.ewm(alpha=1/14, adjust=False).mean()
+    
+    return df
+
+
 @st.cache_data(ttl=15)
 def fetch_live_market_and_indicators(ticker_symbol, interval_choice):
     period_mapping = {
@@ -65,11 +102,8 @@ def fetch_live_market_and_indicators(ticker_symbol, interval_choice):
         for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
         df.dropna(inplace=True)
 
-        df.ta.ema(length=20, append=True)
-        df.ta.ema(length=50, append=True)
-        df.ta.rsi(length=14, append=True)
-        df.ta.macd(append=True)
-        df.ta.atr(length=14, append=True)
+        # Run native math transformations
+        df = calculate_native_indicators(df)
         df.dropna(inplace=True)
 
         chart_df = df.tail(100).copy()
@@ -139,7 +173,6 @@ def fetch_live_sentiment(search_target):
 # --- 3. SIDEBAR CONFIGURATION (DUAL DROPDOWNS) ---
 st.sidebar.header("🤖 AlgoStax Configurations")
 
-# Available tickers dropdown
 TICKER_LIST = [
     "^NSEI", "^BSESN", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS",
     "INFY.NS", "ICICIBANK.NS", "TATAMOTORS.NS", "SBIN.NS",
@@ -147,14 +180,12 @@ TICKER_LIST = [
 ]
 TICKER = st.sidebar.selectbox("Select Ticker Symbol:", options=TICKER_LIST, index=0)
 
-# Available company news targets dropdown
 COMPANY_LIST = [
     "Nifty 50", "Sensex", "Reliance Industries", "Tata Consultancy Services",
     "HDFC Bank", "Infosys", "ICICI Bank", "Tata Motors",
     "State Bank of India", "Apple", "Tesla", "Nvidia", "Bitcoin"
 ]
 
-# Dynamically align indexes so switching ticker updates the matching company by default
 default_company_index = 0
 if TICKER in TICKER_LIST:
     default_company_index = TICKER_LIST.index(TICKER)
@@ -162,7 +193,6 @@ if TICKER in TICKER_LIST:
         default_company_index = 0
 
 COMPANY_NAME = st.sidebar.selectbox("Select Company Search Name:", options=COMPANY_LIST, index=default_company_index)
-
 INTERVAL = st.sidebar.selectbox("Select Chart Timeframe:", options=["1m", "15m", "30m", "1h"], index=1)
 
 # --- 4. PROCESSING STREAM ---
@@ -178,22 +208,15 @@ if df is not None and not df.empty:
     else:
         time_labels = chart_df.index.strftime('%H:%M (%d %b)')
 
-    # --- BALANCED MATHEMATICS FIX ---
-    # Technical indicator probabilities give 0 to 50 points
     tech_points = probs[1] * 50
-
-    # News Headline Sentiment (-1 to +1) shifted and mapped to 0 to 50 points
     sentiment_points = (sentiment_score + 1) * 25
 
-    # Combined Fusion percentage (technical and fundamental balanced 50/50)
     fused_up_prob = tech_points + sentiment_points
     fused_up_prob = max(0, min(100, fused_up_prob))
 
-    # Balanced Threshold States
     tech_state = "BULLISH" if probs[1] > 0.55 else "BEARISH" if probs[1] < 0.45 else "NEUTRAL"
     sent_state = "BULLISH" if sentiment_score > 0.10 else "BEARISH" if sentiment_score < -0.10 else "NEUTRAL"
 
-    # Action Logic based on normalized bounds
     if fused_up_prob > 60:
         fusion_decision = "BUY"
     elif fused_up_prob < 40:
@@ -229,8 +252,6 @@ if df is not None and not df.empty:
             f"### Live Close ({INTERVAL})<br><span style='font-size:28px; font-weight:bold; color:#4ade80;'>₹{last_close:,.2f}</span>",
             unsafe_allow_html=True)
 
-        gauge_value = fused_up_prob if fusion_decision == "BUY" else (
-                    100 - fused_up_prob) if fusion_decision == "SELL" else 50
         gauge_color = "#22c55e" if fusion_decision == "BUY" else "#ef4444" if fusion_decision == "SELL" else "#9ca3af"
 
         fig_gauge = go.Figure(go.Indicator(
@@ -308,7 +329,6 @@ if df is not None and not df.empty:
         )
         st.plotly_chart(fig_chart, use_container_width=True)
 
-    # Lower Section: News Feed Cards
     st.markdown("### 📰 Neural Network Headline Analysis")
     for headline, score in news_list[:4]:
         color_class = "bullish" if score > 0.05 else "bearish" if score < -0.05 else "neutral"
@@ -320,7 +340,6 @@ if df is not None and not df.empty:
             </div>
         """, unsafe_allow_html=True)
 
-    # --- 6. THE EDUCATIONAL FOOTER ---
     st.markdown("<br><hr style='border-color: #30363d;'>", unsafe_allow_html=True)
     with st.expander("ℹ️ Beginner's Guide: How to understand this data", expanded=False):
         st.markdown("""
