@@ -1,8 +1,7 @@
 streamlit
-pandas==2.1.4
-numpy==1.26.4
+pandas
+numpy
 yfinance
-pandas-ta
 nltk
 scikit-learn
 plotly
